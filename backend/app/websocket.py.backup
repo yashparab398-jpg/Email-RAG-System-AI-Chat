@@ -1,0 +1,60 @@
+from asyncio import sleep
+
+from fastapi import APIRouter
+from fastapi import WebSocket
+from fastapi import WebSocketDisconnect
+
+from app.services.rag_service import answer_question
+
+router = APIRouter()
+
+
+@router.websocket("/chat")
+async def chat(websocket: WebSocket):
+
+    await websocket.accept()
+
+    try:
+
+        while True:
+
+            question = await websocket.receive_text()
+
+            await websocket.send_json(
+                {
+                    "type": "retrieval_started"
+                }
+            )
+
+            response = answer_question(question)
+
+            for source in response["sources"][:5]:
+
+                await websocket.send_json(
+                    {
+                        "type": "source_found",
+                        "email": source
+                    }
+                )
+
+                await sleep(0.1)
+
+            await websocket.send_json(
+                {
+                    "type": "assistant_token",
+                    "question": question,
+                    "answer": response["answer"],
+                    "confidence": response["confidence"],
+                    "sources": response["sources"]
+                }
+            )
+
+            await websocket.send_json(
+                {
+                    "type": "assistant_done"
+                }
+            )
+
+    except WebSocketDisconnect:
+
+        print("Client disconnected")

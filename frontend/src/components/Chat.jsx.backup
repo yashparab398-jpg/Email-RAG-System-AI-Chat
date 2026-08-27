@@ -1,0 +1,1299 @@
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+
+import Sidebar from "./Sidebar";
+import MessageList from "./MessageList";
+import MessageInput from "./MessageInput";
+import SourcePanel from "./SourcePanel";
+import SuggestedQuestions from "./SuggestedQuestions";
+
+import Dashboard from "./Dashboard";
+import Entities from "./Entities";
+import Timeline from "./Timeline";
+import RiskAnalysis from "./RiskAnalysis";
+import CommunicationHubs from "./CommunicationHubs";
+import IngestionProgress from "./IngestionProgress";
+
+import "../styles/chat.css";
+
+
+/* =========================================================
+   SESSION ID
+   ========================================================= */
+
+function createSessionId() {
+  if (
+    typeof crypto !== "undefined" &&
+    crypto.randomUUID
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `session-${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+
+/* =========================================================
+   WEBSOCKET URL
+   ========================================================= */
+
+function getWebSocketUrl() {
+  const apiUrl =
+    import.meta.env.VITE_API_URL ||
+    "http://127.0.0.1:8000";
+
+  return apiUrl
+    .replace(/^http:/, "ws:")
+    .replace(/^https:/, "wss:")
+    .replace(/\/$/, "") + "/chat";
+}
+
+
+/* =========================================================
+   COMPONENT
+   ========================================================= */
+
+export default function Chat() {
+
+  /* =====================================================
+     NAVIGATION
+     ===================================================== */
+
+  const [activeView, setActiveView] =
+    useState("chat");
+
+
+  /* =====================================================
+     CHAT STATE
+     ===================================================== */
+
+  const [messages, setMessages] =
+    useState([]);
+
+  const [input, setInput] =
+    useState("");
+
+  const [selectedSource, setSelectedSource] =
+    useState(null);
+
+  const [isLoading, setIsLoading] =
+    useState(false);
+
+
+  /* =====================================================
+     WEBSOCKET STATE
+     ===================================================== */
+
+  const [isConnected, setIsConnected] =
+    useState(false);
+
+  const [connectionError, setConnectionError] =
+    useState("");
+
+
+  /* =====================================================
+     SESSION
+     ===================================================== */
+
+  const sessionIdRef =
+    useRef(createSessionId());
+
+
+  /* =====================================================
+     WEBSOCKET REF
+     ===================================================== */
+
+  const socketRef =
+    useRef(null);
+
+
+  /* =====================================================
+     CONNECTION ATTEMPT REF
+     ===================================================== */
+
+  const reconnectTimerRef =
+    useRef(null);
+
+
+  /* =====================================================
+     CURRENT ASSISTANT MESSAGE REF
+     ===================================================== */
+
+  const assistantMessageIndexRef =
+    useRef(null);
+
+
+  /* =====================================================
+     AUTO SCROLL REF
+     ===================================================== */
+
+  const messagesEndRef =
+    useRef(null);
+
+
+  /* =====================================================
+     CONNECT WEBSOCKET
+     ===================================================== */
+
+  const connectWebSocket = useCallback(() => {
+
+    /*
+     * Do not create duplicate connections.
+     */
+
+    if (
+      socketRef.current &&
+      (
+        socketRef.current.readyState ===
+          WebSocket.OPEN ||
+        socketRef.current.readyState ===
+          WebSocket.CONNECTING
+      )
+    ) {
+      return;
+    }
+
+
+    const url =
+      getWebSocketUrl();
+
+    console.log(
+      "[WS] Connecting:",
+      url
+    );
+
+    setConnectionError("");
+
+
+    let socket;
+
+    try {
+
+      socket =
+        new WebSocket(url);
+
+    } catch (error) {
+
+      console.error(
+        "[WS] Connection creation failed:",
+        error
+      );
+
+      setIsConnected(false);
+
+      setConnectionError(
+        "Unable to connect to the AI service."
+      );
+
+      return;
+
+    }
+
+
+    socketRef.current =
+      socket;
+
+
+    /* =================================================
+       OPEN
+       ================================================= */
+
+    socket.onopen = () => {
+
+      console.log(
+        "[WS] Connected."
+      );
+
+      setIsConnected(true);
+
+      setConnectionError("");
+
+    };
+
+
+    /* =================================================
+       MESSAGE
+       ================================================= */
+
+    socket.onmessage = (event) => {
+
+      try {
+
+        const data =
+          JSON.parse(event.data);
+
+        console.log(
+          "[WS] Event:",
+          data
+        );
+
+
+        /* =============================================
+           RETRIEVAL STARTED
+           ============================================= */
+
+        if (
+          data.type ===
+          "retrieval_started"
+        ) {
+
+          setIsLoading(true);
+
+          return;
+        }
+
+
+        /* =============================================
+           SOURCE FOUND
+           ============================================= */
+
+        if (
+          data.type ===
+          "source_found"
+        ) {
+
+          const source =
+            data.email ||
+            data.source;
+
+          if (!source) {
+            return;
+          }
+
+
+          /*
+           * Add source to the currently building
+           * assistant message if possible.
+           */
+
+          setMessages(
+            (previous) => {
+
+              const updated =
+                [...previous];
+
+              const assistantIndex =
+                assistantMessageIndexRef.current;
+
+              if (
+                assistantIndex !== null &&
+                updated[assistantIndex] &&
+                updated[assistantIndex].type ===
+                  "assistant"
+              ) {
+
+                const existingSources =
+                  updated[
+                    assistantIndex
+                  ].data?.sources || [];
+
+                const alreadyExists =
+                  existingSources.some(
+                    (item) =>
+                      (
+                        item.message_id &&
+                        source.message_id &&
+                        item.message_id ===
+                          source.message_id
+                      ) ||
+                      (
+                        item._id &&
+                        source._id &&
+                        item._id ===
+                          source._id
+                      )
+                  );
+
+                if (!alreadyExists) {
+
+                  updated[
+                    assistantIndex
+                  ] = {
+                    ...updated[
+                      assistantIndex
+                    ],
+
+                    data: {
+                      ...updated[
+                        assistantIndex
+                      ].data,
+
+                      sources: [
+                        ...existingSources,
+                        source,
+                      ],
+                    },
+                  };
+
+                }
+
+              }
+
+              return updated;
+
+            }
+          );
+
+          return;
+        }
+
+
+        /* =============================================
+           ASSISTANT TOKEN
+           ============================================= */
+
+        if (
+          data.type ===
+          "assistant_token"
+        ) {
+
+          /*
+           * The current backend may send the complete
+           * answer in this event. The logic below also
+           * supports incremental content events.
+           */
+
+          const incomingAnswer =
+            data.content ??
+            data.answer ??
+            "";
+
+          const incomingSources =
+            Array.isArray(data.sources)
+              ? data.sources
+              : [];
+
+
+          setMessages(
+            (previous) => {
+
+              const updated =
+                [...previous];
+
+              let assistantIndex =
+                assistantMessageIndexRef.current;
+
+
+              /* =======================================
+                 CREATE ASSISTANT MESSAGE
+                 ======================================= */
+
+              if (
+                assistantIndex === null ||
+                !updated[
+                  assistantIndex
+                ] ||
+                updated[
+                  assistantIndex
+                ].type !== "assistant"
+              ) {
+
+                assistantIndex =
+                  updated.length;
+
+                assistantMessageIndexRef.current =
+                  assistantIndex;
+
+                updated.push({
+                  type: "assistant",
+
+                  data: {
+                    answer: "",
+                    confidence:
+                      data.confidence ??
+                      null,
+                    sources: [],
+                  },
+                });
+
+              }
+
+
+              const current =
+                updated[
+                  assistantIndex
+                ];
+
+              const currentAnswer =
+                current.data?.answer || "";
+
+
+              /*
+               * If the backend explicitly marks this
+               * event as a complete answer, replace it.
+               *
+               * Otherwise append content.
+               */
+
+              const isCompleteAnswer =
+                Boolean(
+                  data.answer &&
+                  !data.content
+                );
+
+
+              const nextAnswer =
+                isCompleteAnswer
+                  ? incomingAnswer
+                  : currentAnswer +
+                    incomingAnswer;
+
+
+              const currentSources =
+                current.data?.sources ||
+                [];
+
+
+              const mergedSources = [
+                ...currentSources,
+              ];
+
+
+              for (
+                const source
+                of incomingSources
+              ) {
+
+                if (
+                  typeof source !==
+                  "object"
+                ) {
+                  continue;
+                }
+
+                const exists =
+                  mergedSources.some(
+                    (item) =>
+                      (
+                        item.message_id &&
+                        source.message_id &&
+                        item.message_id ===
+                          source.message_id
+                      ) ||
+                      (
+                        item._id &&
+                        source._id &&
+                        item._id ===
+                          source._id
+                      )
+                  );
+
+                if (!exists) {
+                  mergedSources.push(
+                    source
+                  );
+                }
+
+              }
+
+
+              updated[
+                assistantIndex
+              ] = {
+
+                ...current,
+
+                data: {
+
+                  ...current.data,
+
+                  answer:
+                    nextAnswer,
+
+                  confidence:
+                    data.confidence ??
+                    current.data?.confidence ??
+                    null,
+
+                  sources:
+                    mergedSources,
+
+                },
+
+              };
+
+
+              return updated;
+
+            }
+          );
+
+
+          setIsLoading(false);
+
+          return;
+        }
+
+
+        /* =============================================
+           ASSISTANT DONE
+           ============================================= */
+
+        if (
+          data.type ===
+          "assistant_done"
+        ) {
+
+          setIsLoading(false);
+
+          return;
+        }
+
+
+        /* =============================================
+           ERROR
+           ============================================= */
+
+        if (
+          data.type ===
+          "error"
+        ) {
+
+          console.error(
+            "[WS] Backend error:",
+            data
+          );
+
+          setIsLoading(false);
+
+          setMessages(
+            (previous) => [
+              ...previous,
+
+              {
+                type: "assistant",
+
+                data: {
+                  answer:
+                    data.message ||
+                    "The AI service encountered an error.",
+
+                  confidence: 0,
+
+                  sources: [],
+                },
+              },
+            ]
+          );
+
+          return;
+        }
+
+      } catch (error) {
+
+        console.error(
+          "[WS] Invalid message:",
+          error,
+          event.data
+        );
+
+      }
+
+    };
+
+
+    /* =================================================
+       ERROR
+       ================================================= */
+
+    socket.onerror = (error) => {
+
+      console.error(
+        "[WS] Socket error:",
+        error
+      );
+
+      setIsConnected(false);
+
+      setConnectionError(
+        "AI WebSocket connection error."
+      );
+
+    };
+
+
+    /* =================================================
+       CLOSE
+       ================================================= */
+
+    socket.onclose = () => {
+
+      console.log(
+        "[WS] Connection closed."
+      );
+
+      setIsConnected(false);
+
+      socketRef.current =
+        null;
+
+
+      /*
+       * Don't display a permanent error while the
+       * application is attempting to reconnect.
+       */
+
+      if (!isLoading) {
+
+        setConnectionError(
+          "AI connection disconnected. Reconnecting..."
+        );
+
+      }
+
+
+      /*
+       * Automatically reconnect.
+       */
+
+      if (
+        reconnectTimerRef.current
+      ) {
+
+        clearTimeout(
+          reconnectTimerRef.current
+        );
+
+      }
+
+
+      reconnectTimerRef.current =
+        setTimeout(() => {
+
+          connectWebSocket();
+
+        }, 2000);
+
+    };
+
+  }, [isLoading]);
+
+
+  /* =====================================================
+     INITIAL WEBSOCKET CONNECTION
+     ===================================================== */
+
+  useEffect(() => {
+
+    connectWebSocket();
+
+
+    return () => {
+
+      if (
+        reconnectTimerRef.current
+      ) {
+
+        clearTimeout(
+          reconnectTimerRef.current
+        );
+
+      }
+
+
+      if (
+        socketRef.current
+      ) {
+
+        socketRef.current.onclose =
+          null;
+
+        socketRef.current.close();
+
+        socketRef.current =
+          null;
+
+      }
+
+    };
+
+  }, [connectWebSocket]);
+
+
+  /* =====================================================
+     AUTO SCROLL
+     ===================================================== */
+
+  useEffect(() => {
+
+    if (
+      activeView !== "chat"
+    ) {
+      return;
+    }
+
+    messagesEndRef.current?.scrollIntoView({
+      behavior: "smooth",
+    });
+
+  }, [
+    messages,
+    activeView,
+  ]);
+
+
+  /* =====================================================
+     RECENT SEARCH EVENT
+     ===================================================== */
+
+  useEffect(() => {
+
+    const handleRecentSearch =
+      (event) => {
+
+        const search =
+          event.detail;
+
+        if (!search) {
+          return;
+        }
+
+        setActiveView("chat");
+
+        setInput(search);
+
+        setSelectedSource(null);
+
+      };
+
+
+    window.addEventListener(
+      "email-intelligence-search",
+      handleRecentSearch
+    );
+
+
+    return () => {
+
+      window.removeEventListener(
+        "email-intelligence-search",
+        handleRecentSearch
+      );
+
+    };
+
+  }, []);
+
+
+  /* =====================================================
+     SEND MESSAGE
+     ===================================================== */
+
+  const sendMessage = () => {
+
+    const question =
+      input.trim();
+
+
+    if (!question) {
+      return;
+    }
+
+
+    if (isLoading) {
+      return;
+    }
+
+
+    if (
+      !socketRef.current ||
+      socketRef.current.readyState !==
+        WebSocket.OPEN
+    ) {
+
+      setConnectionError(
+        "AI connection is not ready. Please wait for reconnection."
+      );
+
+      return;
+
+    }
+
+
+    /* ================================================
+       ADD USER MESSAGE
+       ================================================ */
+
+    setMessages(
+      (previous) => [
+        ...previous,
+
+        {
+          type: "user",
+          text: question,
+        },
+      ]
+    );
+
+
+    /* ================================================
+       CLEAR INPUT
+       ================================================ */
+
+    setInput("");
+
+
+    /* ================================================
+       CLEAR SOURCE
+       ================================================ */
+
+    setSelectedSource(null);
+
+
+    /* ================================================
+       PREPARE ASSISTANT MESSAGE
+       ================================================ */
+
+    assistantMessageIndexRef.current =
+      null;
+
+
+    /* ================================================
+       LOADING
+       ================================================ */
+
+    setIsLoading(true);
+
+
+    setMessages(
+      (previous) => [
+        ...previous,
+
+        {
+          type: "loading",
+        },
+      ]
+    );
+
+
+    /* ================================================
+       SEND WEBSOCKET MESSAGE
+       ================================================ */
+
+    try {
+
+      socketRef.current.send(
+        JSON.stringify({
+
+          type:
+            "user_message",
+
+          session_id:
+            sessionIdRef.current,
+
+          message:
+            question,
+
+          top_k:
+            5,
+
+        })
+      );
+
+    } catch (error) {
+
+      console.error(
+        "[WS] Failed to send message:",
+        error
+      );
+
+      setIsLoading(false);
+
+      setMessages(
+        (previous) =>
+          previous.filter(
+            (message) =>
+              message.type !==
+              "loading"
+          )
+      );
+
+      setMessages(
+        (previous) => [
+          ...previous,
+
+          {
+            type: "assistant",
+
+            data: {
+              answer:
+                "Unable to send the question to the AI service.",
+
+              confidence: 0,
+
+              sources: [],
+            },
+          },
+        ]
+      );
+
+    }
+
+  };
+
+
+  /* =====================================================
+     REMOVE LOADING MESSAGE WHEN ASSISTANT ARRIVES
+     ===================================================== */
+
+  useEffect(() => {
+
+    if (!isLoading) {
+
+      /*
+       * Do not remove loading messages here.
+       *
+       * The WebSocket response handler is responsible
+       * for replacing the loading state when the answer
+       * arrives.
+       */
+
+    }
+
+  }, [isLoading]);
+
+
+  /* =====================================================
+     HANDLE VIEW CHANGE
+     ===================================================== */
+
+  const handleViewChange =
+    (view) => {
+
+      setActiveView(view);
+
+      setSelectedSource(null);
+
+    };
+
+
+  /* =====================================================
+     HEADER TITLE
+     ===================================================== */
+
+  const getHeaderTitle = () => {
+
+    switch (activeView) {
+
+      case "dashboard":
+        return "Email Intelligence Dashboard";
+
+      case "entities":
+        return "Entity Intelligence";
+
+      case "timeline":
+        return "Timeline Analysis";
+
+      case "risk":
+        return "Risk Analysis";
+
+      case "hubs":
+        return "Communication Hubs";
+
+      case "ingestion":
+        return "Ingestion Progress";
+
+      case "chat":
+      default:
+        return "AI Email Intelligence";
+
+    }
+
+  };
+
+
+  /* =====================================================
+     HEADER SUBTITLE
+     ===================================================== */
+
+  const getHeaderSubtitle = () => {
+
+    switch (activeView) {
+
+      case "dashboard":
+        return "Email Analytics";
+
+      case "entities":
+        return "People and communication entities";
+
+      case "timeline":
+        return "Historical email activity";
+
+      case "risk":
+        return "Risk and compliance intelligence";
+
+      case "hubs":
+        return "Communication network intelligence";
+
+      case "ingestion":
+        return "Dataset processing and indexing";
+
+      case "chat":
+      default:
+        return "Email Knowledge Assistant";
+
+    }
+
+  };
+
+
+  /* =====================================================
+     CONNECTION STATUS
+     ===================================================== */
+
+  const connectionLabel =
+    isLoading
+      ? "AI PROCESSING..."
+      : isConnected
+        ? "AI SYSTEM ONLINE"
+        : "AI CONNECTING...";
+
+
+  /* =====================================================
+     ACTIVE ANALYTICS VIEW
+     ===================================================== */
+
+  const renderActiveView = () => {
+
+    switch (activeView) {
+
+      case "dashboard":
+        return <Dashboard />;
+
+      case "entities":
+        return <Entities />;
+
+      case "timeline":
+        return <Timeline />;
+
+      case "risk":
+        return (
+          <RiskAnalysis
+            setSelectedSource={
+              setSelectedSource
+            }
+          />
+        );
+
+      case "hubs":
+        return <CommunicationHubs />;
+
+      case "ingestion":
+        return <IngestionProgress />;
+
+      case "chat":
+      default:
+        return null;
+
+    }
+
+  };
+
+
+  /* =====================================================
+     RENDER
+     ===================================================== */
+
+  return (
+
+    <div className="chat-layout">
+
+
+      {/* =================================================
+          AMBIENT BACKGROUND
+          ================================================= */}
+
+      <div className="orb orb-1"></div>
+
+      <div className="orb orb-2"></div>
+
+
+      {/* =================================================
+          SIDEBAR
+          ================================================= */}
+
+      <Sidebar
+        activeView={
+          activeView
+        }
+
+        setActiveView={
+          handleViewChange
+        }
+      />
+
+
+      {/* =================================================
+          MAIN CONTENT
+          ================================================= */}
+
+      <main className="chat-container">
+
+
+        {/* =================================================
+            WINDOW CONTROLS
+            ================================================= */}
+
+        <div className="window-controls">
+
+          <span className="red"></span>
+
+          <span className="yellow"></span>
+
+          <span className="green"></span>
+
+        </div>
+
+
+        {/* =================================================
+            HEADER
+            ================================================= */}
+
+        <header className="chat-header">
+
+          <div>
+
+            <h1>
+              {getHeaderTitle()}
+            </h1>
+
+            <p>
+              {getHeaderSubtitle()}
+            </p>
+
+          </div>
+
+
+          <div className="header-status">
+
+            <span
+              className={
+                isConnected
+                  ? "header-status-dot online"
+                  : "header-status-dot offline"
+              }
+            />
+
+            {connectionLabel}
+
+          </div>
+
+        </header>
+
+
+        {/* =================================================
+            CONNECTION ERROR
+            ================================================= */}
+
+        {connectionError && (
+          <div className="chat-connection-warning">
+
+            {connectionError}
+
+          </div>
+        )}
+
+
+        {/* =================================================
+            CHAT VIEW
+            ================================================= */}
+
+        {activeView === "chat" && (
+
+          <div className="view-container active-view">
+
+            <div className="search-banner">
+
+              <SuggestedQuestions
+                setInput={
+                  setInput
+                }
+              />
+
+            </div>
+
+
+            <MessageList
+              messages={
+                messages
+              }
+
+              setSelectedSources={
+                setSelectedSource
+              }
+            />
+
+
+            <div
+              ref={
+                messagesEndRef
+              }
+            />
+
+
+            <MessageInput
+              input={
+                input
+              }
+
+              setInput={
+                setInput
+              }
+
+              sendMessage={
+                sendMessage
+              }
+
+              isLoading={
+                isLoading
+              }
+
+              isConnected={
+                isConnected
+              }
+            />
+
+          </div>
+
+        )}
+
+
+        {/* =================================================
+            ANALYTICS / INGESTION VIEW
+            ================================================= */}
+
+        {activeView !== "chat" && (
+
+          <div className="analytics-content analytics-view-visible">
+
+            {renderActiveView()}
+
+          </div>
+
+        )}
+
+      </main>
+
+
+      {/* =================================================
+          SOURCE PANEL
+          ================================================= */}
+
+      <SourcePanel
+        source={
+          selectedSource
+        }
+      />
+
+
+    </div>
+
+  );
+
+}
