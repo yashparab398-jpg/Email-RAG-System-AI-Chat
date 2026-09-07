@@ -1,4 +1,4 @@
-# Enron-Email-Dataset-AI-Chat-System
+# Email-RAG-System--AI-Chat-
 
 An AI-powered email intelligence system built using the Enron Email Dataset. The system allows users to ask natural-language questions about the email knowledge base and receive AI-generated answers with relevant sources and confidence information.
 
